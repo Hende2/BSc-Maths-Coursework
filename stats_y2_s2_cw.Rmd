@@ -1,0 +1,302 @@
+---
+title: "MA22015 2025 - Coursework"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    df_print: paged
+    toc: true
+---
+<!-- Do not include your name in the output. Moodle will associate
+your name with your upload. It does not matter what name you give to this file. Do not remove the table of contents (toc) -->
+
+<!-- You may add cosmetic options only to this chunk -->
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,comment=NA)
+```
+
+<!-- Do not change the section titles for the questions -->
+
+## Generative AI statement
+
+ChatGPT (4o) was used for debugging errors and improving the formatting and readability of the document. I also used it for spell and grammar checking and to ensure that when knitted I wouldn't have code that was outside the page boundaries.
+
+## Data and Packages
+
+```{r}
+undp = read.csv('undp.csv')
+library(ggplot2)
+library(patchwork)
+```
+## Summary and plots of the data
+
+```{r}
+summary(undp)
+undp_countries = subset(undp, ccode <= "ZWE") 
+# The last country in this dataset is Zimbabwe, after that you have summaries based 
+# on regions or economic areas.
+```
+Note that all countries had life expectancy estimates, but inequality in both income and education is often missing, perhaps for political reasons. $CO_2$ has a very low mean compared to the maximum value which is more than the median plus 10 times the IQR, suggesting extreme outliers.
+
+  * Lots of missing values for inequality of income (24), inequality in education (17) and maternal mortality (15).
+  * Small numbers of missing values for co2 (6), gnipc (2) and hdi (2).
+  * co2, gnipc and matmr are all right-skewed as there is a large difference between the mean and the median for all three statistics.
+  
+The first relationship I want to investigate is maternal mortality vs inequality in education. This is because inequality in education is indicative of a society with different access to resources based on gender, and a lack of medical knowledge about women's health could lead to increased mortality rates. 
+
+```{r}
+ineqedu_matmr_data = subset(undp_countries, !is.na(ineqedu) & !is.na(matmr))
+ggplot(ineqedu_matmr_data, aes(x = log(ineqedu), y = log(matmr))) + geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm") + theme_minimal() + 
+  labs(x = "Inequality in education (log scale)", y ="Maternal mortality 
+       (deaths per 100,000 live births, log scale)") + 
+  ggtitle("Maternal mortality vs inequality in education")
+```
+
+A linear relationship in the log(matmr) ~ log(ineqedu) plot suggests a power law relationship, signifying that higher levels of inequality in education are associated with disproportionately higher maternal mortality rates. Even without any statistical analysis we can see the steepness of the gradient seems to be greater than 1, implying that increases to inequality in education lead to greater increases in maternal mortality. 
+
+The second relationship I want to investigate is $CO_2$ emissions vs Life expectancy, as on the one hand higher $CO_2$ emissions are linked to air pollution and acid rain but are also an indication of a more resource intensive nation. What is the trade-off between pollution and resources?
+
+```{r}
+# We only need to select data with co2 in it as no missing life expectancy data.
+co2_lifexp_data = subset(undp_countries, !is.na(co2))
+ggplot(co2_lifexp_data, aes(x = log(co2), y = lifexp)) + geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm") + theme_minimal() + 
+  labs(x = "Carbon Dioxide Emissions per capita (log scale, tonnes)",
+       y = "Life Expectancy") + 
+  ggtitle("Life Expectancy vs Carbon Dioxide Emissions")
+```
+
+From this graph we can see that the polluting aspects of carbon dioxide emissions don't have clear effects on life expectancy, in fact increasing carbon dioxide emissions is linked to higher life expectancy. This suggests that good levels of economic activity are much more important for health outcomes than pollution.
+
+## Predict missing GNIPC values
+
+```{r}
+# We first find out what countries are missing data for gnipc
+gnipc_missing = subset(undp_countries, is.na(gnipc))
+print(gnipc_missing)
+```
+
+We use linear models with all available predictors from both countries to make our prediction at the 95% level. I chose to only use the available predictors and not estimate means for the unrecorded measurements due to the number of missing values and also the risk of extrapolation errors. As we are predicting values for individual data, we use prediction intervals.
+
+```{r}
+initial_lmod_mco = lm(gnipc ~ lifexp + lifexpF + lifexpM, undp_countries)
+par(mfrow = c(1,2))
+plot(initial_lmod_mco, 1)
+plot(initial_lmod_mco, 2)
+par(mfrow = c(1,1))
+```
+
+We can see that there is some evidence of non constant variance, perhaps due to the right-skew on gnipc, and some evidence that the residuals are not normal from the right tail of the QQ plot. Now let's check if a transformed model fits better.
+
+```{r}
+lmod_mco = lm(log(gnipc) ~ lifexp + lifexpF + lifexpM, undp_countries) 
+par(mfrow = c(1,2))
+plot(lmod_mco,1)
+plot(lmod_mco, 2)
+par(mfrow = c(1,1))
+```
+
+The model fit is improved, with a flatter residual pattern and a more random distribution. Residuals also now satisfy the normality assumption. Now we predict.
+
+```{r}
+exp(predict(lmod_mco, newdata = undp_countries[109, ], interval = "prediction")) 
+# Bear in mind that we log transformed gnipc so we have to convert it back to normal.
+```
+
+Our 95% prediction interval for the GNIPC of Monaco is [\$22400, \$289100] (to the nearest hundred dollars) with a predicted value of \$80400. 
+
+```{r}
+# Log transform the right-skewed data in our model.
+lmod_prk = lm(log(gnipc) ~ log(co2) + lifexp + lifexpF + lifexpM + log(matmr)
+              , undp_countries) 
+lmod_prk = step(lmod_prk, trace=0) 
+# Use AIC to prune the model as we have quite a few predictors
+plot(lmod_prk, 1) # We quickly check a diagnostic plot.
+```
+
+No assumptions seem to be broken. We see that AIC removed lifexpM only (as it is covered by lifexp and lifexpF).
+
+```{r}
+exp(predict(lmod_prk, newdata = undp_countries[143, ], interval = "prediction"))
+```
+Our 95% prediction interval for the GNIPC of Korea (DPRK) is [\$4800, \$23500] (to the nearest hundred dollars) with a predicted value of \$10700. 
+
+## Carbon dioxide emissions
+
+```{r}
+# Firstly we have to make sure that we have the correct dataset.
+co2_gnipc_data = subset(undp_countries, !is.na(gnipc) & !is.na(co2))
+
+# Now for some diagnostic plots
+# Log transforms to deal with right skew of data.
+log_lmod = lm(log(co2) ~ log(gnipc), co2_gnipc_data)
+par(mfrow = c(2,2))
+plot(log_lmod)
+par(mfrow = c(1,1))
+```
+
+Diagnostic plots show that the assumptions of the linear model are not violated (constant variance, normality of residuals and no leverage points), suggesting that the model is suitable.
+
+```{r}
+summary(log_lmod)
+```
+
+All plots of the linear model indicate that the fit is suitable, and the adjusted r-squared of 0.809 indicates that the model explains the variance of the data very well.
+Note that the coefficient for log(gnipc) is 1.06 not 1, suggesting that when you increase gnipc you get disproportionately greater increases in your co2 emissions per capita. Let's go further and test the hypothesis that the slope is equal to 1.
+
+```{r}
+confint(log_lmod)
+```
+
+We see that 1.06 is within the 95% confidence interval so we fail to reject the null hypothesis that the slope is equal to 1 at the 5% level. We conclude that as countries become wealthier, they begin to emit more $CO_2$,  perhaps to having more resource-intensive products accessible because of higher economic activity.
+
+Now we search for the over-emitters and the under-emitters.
+
+```{r}
+co2_gnipc_data$ratio = co2_gnipc_data$co2 / co2_gnipc_data$gnipc
+
+# Find the largest over-emitter and under-emitter
+sorted_ratios = co2_gnipc_data[order(co2_gnipc_data$ratio, decreasing = TRUE), ]
+
+print(sorted_ratios[1:5, c("country", "co2", "gnipc", "ratio")])
+print(sorted_ratios[rev((nrow(sorted_ratios)-4):nrow(sorted_ratios)),
+                    c("country", "co2", "gnipc", "ratio")])
+```
+
+Here is a table of the largest 5 over-emitters, and then a table of the largest under-emitters. We can see that the largest over-emitter is Mongolia, the largest under-emitter is Liechtenstein. Mongolia has a low gnipc (half the mean) with very high co2 emissions and Liechtenstein has fairly standard emissions but an incredibly high gnipc.
+
+
+## Inequality and life expectancy
+
+Let's make some plots to understand the problem better.
+
+```{r}
+gnipc_ineq_data = subset(undp_countries, !is.na(gnipc) & !is.na(ineqinc) & !is.na(ineqedu))
+
+p1 = ggplot(gnipc_ineq_data, aes(x = log(gnipc), y = lifexp)) + geom_point() + 
+  geom_smooth(method = "lm") + labs(x = "log of GNIPC", y = "Life Expectancy") + 
+  theme_minimal()
+
+p2 = ggplot(gnipc_ineq_data, aes(x = ineqinc, y = lifexp)) + geom_point() + 
+  geom_smooth(method = "lm") + labs(x = "Inequality in Income", y = "Life Expectancy") + 
+  theme_minimal()
+
+p3 = ggplot(gnipc_ineq_data, aes(x = ineqedu, y = lifexp)) + geom_point() + 
+  geom_smooth(method = "lm") +  labs(x = "Inequality in Education",
+                                     y = "Life Expectancy") + theme_minimal()
+
+p1 + p2 + p3
+```
+
+Here we can see that inequality decreases life expectancy, whilst GNIPC increases it. Inequality in education seems to fit the data the least well visually from the plots but now we will investigate.
+
+```{r}
+ineq_gnipc_model = lm(lifexp ~ log(gnipc) + ineqinc + ineqedu, gnipc_ineq_data)
+par(mfrow = c(2,2))
+plot(ineq_gnipc_model)
+par(mfrow = c(1,1))
+```
+
+Plots look normal, looks like no assumptions are being violated in this model.
+
+```{r}
+summary(ineq_gnipc_model)$coef
+```
+
+From this summary we can tell that whilst both GNIPC and inequality in income are highly significant predictors of life expectancy for a country, inequality in education - whilst seemingly significant on its own - is not significant when considering the other factors. Let's investigate potential collinearity between predictors.
+
+```{r}
+cor(model.matrix(ineq_gnipc_model)[,-1])
+```
+
+It seems that whilst all the predictors are correlated with each other, it is GNIPC that has the highest correlation with inequality in education and therefore by including the gnipc variable in a model you take away some of the predicting power of ineqedu.
+
+```{r}
+gnipc_ineqinc_lm = lm(lifexp ~ log(gnipc) + ineqinc, gnipc_ineq_data)
+summary(gnipc_ineqinc_lm)$coef
+gnipc_ineqedu_lm = lm(lifexp ~ log(gnipc) + ineqedu, gnipc_ineq_data)
+summary(gnipc_ineqedu_lm)$coef
+```
+
+From these linear models we see that whilst both inequality in education and income are significant, income inequality is significant at a much higher level when combined with GNIPC. This fits with the correlation argument as there is less correlation between the two predictors.
+
+Now let's investigate whether GNIPC or inequality is a greater predictor. We also test which of income or education inequality on its own is a better predictor.
+
+```{r}
+gnip_lm = lm(lifexp ~ log(gnipc), gnipc_ineq_data)
+summary(gnip_lm)$adj.r.squared
+ineq_lm = lm(lifexp ~ ineqinc + ineqedu, gnipc_ineq_data)
+summary(ineq_lm)$adj.r.squared
+ineqedu_lm = lm(lifexp ~ ineqedu, gnipc_ineq_data)
+summary(ineqedu_lm)$adj.r.squared
+ineqinc_lm = lm(lifexp ~ ineqinc, gnipc_ineq_data)
+summary(ineqinc_lm)$adj.r.squared
+```
+
+Note that the model with only log(gnipc) has a higher adjusted r-squared than the model with ineqinc and ineqedu. Therefore we can conclude that GNIPC is the most significant predictor of a country's life expectancy rather than inequality. We can also conclude that both types of inequality have very similar predicting power for life expectancy. 
+
+## Effect of GNIPC on life expectancy by sex
+
+```{r}
+gnipc_data = subset(undp_countries, !is.na(gnipc)) 
+# Only need to check for missing gnipc as all countries have the relevant
+# life expectancy statistics.
+undp_male = gnipc_data[, c("country", "gnipc", "lifexpM")]
+undp_female = gnipc_data[, c("country", "gnipc", "lifexpF")]
+
+# We want to add a label to the lifexp not included in the column name
+# so we rename the columns and then add an extra one for identification.
+names(undp_male)[3] = "lifexp"
+names(undp_female)[3] = "lifexp"
+
+undp_male$sex = "M"
+undp_female$sex = "F"
+
+# Stack the two datasets on top of one another
+undp_long = rbind(undp_male, undp_female)
+
+interaction_lmod = lm(lifexp ~ log(gnipc) * sex, undp_long)
+summary(interaction_lmod)$coef
+
+# Compare the model with one with no interaction.
+small_lmod = lm(lifexp ~ log(gnipc) + sex, undp_long)
+anova(small_lmod, interaction_lmod)
+```
+
+The p-value for the interaction between GNIPC and sex isn't significant, suggesting that the male and female parts contribute equally to the overall life expectancy. Equivalently, an anova test comparing a model with or without the log(gnipc):sex interaction shows no significant improvement, suggesting that the effect of GNIPC on life expectancy does not differ between males and females.
+
+## Male and Female Life expectancies
+
+We will compare a model predicting life expectancy as just the direct average of the male and female life expectancy to another model allowing prediction with different coefficients.
+
+```{r}
+base_model = lm(lifexp ~ I((lifexpM + lifexpF) / 2), undp_countries)
+summary(base_model)
+plot(base_model, 2)
+```
+
+From the summary we see that the slope is 1.0018 with a very small intercept of -0.175, so the average of male and female predicts life expectancy almost perfectly. The QQ plot shows negative skew towards the left tail. Whilst this does question the suitability of the model, the almost perfect adjusted r-squared (0.998) suggests the model is suitable, and a transformation would affect the natural relationship of the model so we leave it as is.
+
+```{r}
+alternative_model = lm(lifexp ~ lifexpM + lifexpF, undp_countries)
+par(mfrow = c(1,2))
+plot(alternative_model, 3)
+plot(alternative_model, 5)
+```
+
+In both diagnostic plots there are no extreme outliers (standardized residuals greater than 3) and so we do not exclude any data as all countries are solid data points. Note that no points are outside the Cook's distance which might influence the model.
+
+```{r}
+summary(alternative_model)
+```
+
+Nothing terribly out of the ordinary, both coefficients for lifexpM and lifexpF are very close to the expected 0.5
+
+Finally we compare the models to see if different coefficients improve the predicting power.
+
+```{r}
+anova(base_model, alternative_model)
+```
+
+From the ANOVA test we obtain a non-significant p-value, so we conclude that the female and male parts of life expectancy contribute equally to overall life expectancy.
